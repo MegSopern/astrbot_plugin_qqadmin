@@ -320,18 +320,18 @@ class QQAdminPlugin(Star):
         await self.join.handle_join_max_time(event, time)
 
     @filter.command("进群黑名单")
-    @perm_required(PermLevel.ADMIN, perm_key="join")
+    @perm_required(PermLevel.SUBADMIN, perm_key="join")
     async def handle_reject_ids(self, event: AiocqhttpMessageEvent):
         "进群黑名单 +QQ -QQ, 带+-则增删, 不带则覆写"
         await self.join.handle_block_ids(event)
 
     @filter.command("批准", alias={"同意进群"}, desc="批准进群申请")
-    @perm_required(PermLevel.ADMIN, perm_key="approve")
+    @perm_required(PermLevel.SUBADMIN, perm_key="approve")
     async def agree_add_group(self, event: AiocqhttpMessageEvent, extra: str = ""):
         await self.join.agree_add_group(event, extra)
 
     @filter.command("驳回", alias={"拒绝进群", "不批准"}, desc="驳回进群申请")
-    @perm_required(PermLevel.ADMIN, perm_key="approve")
+    @perm_required(PermLevel.SUBADMIN, perm_key="approve")
     async def refuse_add_group(self, event: AiocqhttpMessageEvent, extra: str = ""):
         await self.join.refuse_add_group(event, extra)
 

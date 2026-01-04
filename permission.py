@@ -1,8 +1,9 @@
-
 import inspect
+import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import IntEnum
 from functools import wraps
+from pathlib import Path
 from typing import Any, Optional, cast
 
 from astrbot import logger
@@ -21,15 +22,17 @@ class PermLevel(IntEnum):
     SUPERUSER = 0
     OWNER = 1
     ADMIN = 2
-    HIGH = 3
-    MEMBER = 4
-    UNKNOWN = 5
+    SUBADMIN = 3
+    HIGH = 4
+    MEMBER = 5
+    UNKNOWN = 6
 
     def __str__(self):
         return {
             PermLevel.SUPERUSER: "超管",
             PermLevel.OWNER: "群主",
             PermLevel.ADMIN: "管理员",
+            PermLevel.SUBADMIN: "次管理员",
             PermLevel.HIGH: "高等级成员",
             PermLevel.MEMBER: "成员",
             PermLevel.UNKNOWN: "未知/无权限",
@@ -41,13 +44,13 @@ class PermLevel(IntEnum):
             "超管": cls.SUPERUSER,
             "群主": cls.OWNER,
             "管理员": cls.ADMIN,
+            "次管理员": cls.SUBADMIN,
             "高等级成员": cls.HIGH,
             "成员": cls.MEMBER,
             "未知": cls.UNKNOWN,
             "无权限": cls.UNKNOWN,
         }
         return mapping.get(perm_str, cls.UNKNOWN)
-
 
 
 class PermissionManager:
@@ -94,11 +97,29 @@ class PermissionManager:
     async def get_perm_level(
         self, event: AiocqhttpMessageEvent, user_id: str | int
     ) -> PermLevel:
+        ranran_config_path = (
+            Path(__file__).parent.parent.parent
+            / "config"
+            / "ranranbot_chatmanage_config.json"
+        )
         group_id = event.get_group_id()
         if int(group_id) == 0 or int(user_id) == 0:
             return PermLevel.UNKNOWN
         if str(user_id) in self.superusers:
             return PermLevel.SUPERUSER
+
+        # 读取额外管理员列表
+        extra_approvers: list[str] = []
+        try:
+            with open(ranran_config_path, "r", encoding="utf-8-sig") as f:
+                ranran_config = json.load(f)
+            extra_approvers = ranran_config.get("qqadmin", {}).get(
+                "extra_approvers", []
+            )
+        except Exception as e:
+            logger.error(f"读取 ranranbot_chatmanage_config.json 失败: {e}")
+            ranran_config = {}
+
         try:
             info = await event.bot.get_group_member_info(
                 group_id=int(group_id), user_id=int(user_id), no_cache=True
@@ -112,6 +133,12 @@ class PermissionManager:
                 return PermLevel.OWNER
             case "admin":
                 return PermLevel.ADMIN
+
+        # 群审批管理拥有次管理员权限（优先级低于群主/管理员）
+        if str(user_id) in extra_approvers:
+            return PermLevel.SUBADMIN
+
+        match role:
             case "member":
                 return (
                     PermLevel.HIGH
@@ -165,6 +192,7 @@ def perm_required(
         func: Callable[..., AsyncGenerator[Any, Any] | Awaitable[Any]],
     ) -> Callable[..., AsyncGenerator[Any, Any]]:
         actual_perm_key = perm_key or func.__name__
+
         @wraps(func)
         async def wrapper(
             plugin_instance: Any,
@@ -184,7 +212,9 @@ def perm_required(
 
             # 权限管理未初始化
             if not perm_manager._initialized:
-                logger.error(f"PermissionManager 未初始化（尝试访问权限项：{perm_key}）")
+                logger.error(
+                    f"PermissionManager 未初始化（尝试访问权限项：{perm_key}）"
+                )
                 yield event.plain_result("内部错误：权限系统未正确加载")
                 event.stop_event()
                 return
@@ -210,5 +240,3 @@ def perm_required(
         return wrapper
 
     return decorator
-
-
