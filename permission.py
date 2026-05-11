@@ -11,6 +11,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 
+from .config import PluginConfig
 from .utils import get_ats
 
 
@@ -54,45 +55,19 @@ class PermLevel(IntEnum):
 
 
 class PermissionManager:
-    _instance: Optional["PermissionManager"] = None
+    _initialized = False
 
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
+    def __init__(self):
+        self.cfg: PluginConfig | None = None
+        self.perms: dict[str, PermLevel] | None = None
 
-    def __init__(
-        self,
-        superusers: list[str] | None = None,
-        perms: dict[str, str] | None = None,
-        level_threshold: int = 10,
-    ):
+
+    def lazy_init(self, config: PluginConfig):
         if self._initialized:
-            return
-        self.superusers = superusers or []
-        if perms is None:
-            raise ValueError("初始化必须传入 perms")
-        self.perms: dict[str, PermLevel] = {
-            k: PermLevel.from_str(v) for k, v in perms.items()
-        }
-        self.level_threshold = level_threshold
+            raise RuntimeError("PermissionManager already initialized")
+        self.cfg = config
+        self.perms = {k: PermLevel.from_str(v) for k, v in self.cfg.perms.items()}
         self._initialized = True
-
-    @classmethod
-    def get_instance(
-        cls,
-        superusers: list[str] | None = None,
-        perms: dict[str, str] | None = None,
-        level_threshold: int = 50,
-    ) -> "PermissionManager":
-        if cls._instance is None:
-            cls._instance = cls(
-                superusers=superusers,
-                perms=perms,
-                level_threshold=level_threshold,
-            )
-        return cls._instance
 
     async def get_perm_level(
         self, event: AiocqhttpMessageEvent, user_id: str | int
@@ -105,7 +80,7 @@ class PermissionManager:
         group_id = event.get_group_id()
         if int(group_id) == 0 or int(user_id) == 0:
             return PermLevel.UNKNOWN
-        if str(user_id) in self.superusers:
+        if self.cfg and str(user_id) in self.cfg.admins_id:
             return PermLevel.SUPERUSER
 
         # 读取额外管理员列表
@@ -142,7 +117,7 @@ class PermissionManager:
             case "member":
                 return (
                     PermLevel.HIGH
-                    if level >= self.level_threshold
+                    if self.cfg and level >= self.cfg.level_threshold
                     else PermLevel.MEMBER
                 )
             case _:
@@ -158,7 +133,7 @@ class PermissionManager:
         user_level = await self.get_perm_level(event, user_id=event.get_sender_id())
 
         # 未指定权限，则默认至少需要管理员权限
-        required_level = self.perms.get(perm_key) or PermLevel.ADMIN
+        required_level = (self.perms or {}).get(perm_key, PermLevel.ADMIN)
 
         if user_level > required_level:
             return f"你没{required_level}权限"
@@ -176,16 +151,21 @@ class PermissionManager:
         return None
 
 
+perm_manager = PermissionManager()
+
+
 def perm_required(
     bot_perm: PermLevel = PermLevel.ADMIN,
     perm_key: str | None = None,
     check_at: bool = True,
+    allow_private: bool = False,
 ):
     """
     权限检查装饰器。
     :param perm_key: 可选。用户执行命令所需的最低权限键名，默认使用被装饰函数的函数名。
     :param bot_perm: Bot 执行此命令所需的最低权限等级。
     :param check_at: 是否检查“是否有权对被@者实施操作”。
+    :param allow_private: 是否允许在私信中执行。
     """
 
     def decorator(
@@ -200,14 +180,22 @@ def perm_required(
             *args: Any,
             **kwargs: Any,
         ) -> AsyncGenerator[Any, Any]:
-            perm_manager = PermissionManager.get_instance()
 
             # 仅限aiocqhttp
             if event.platform_meta.name != "aiocqhttp":
                 return
 
-            # 仅限群聊
+            # 私信处理
             if event.is_private_chat():
+                if not allow_private:
+                    return
+                if inspect.isasyncgenfunction(func):
+                    async for item in func(plugin_instance, event, *args, **kwargs):
+                        yield item
+                else:
+                    await cast(
+                        Awaitable[Any], func(plugin_instance, event, *args, **kwargs)
+                    )
                 return
 
             # 权限管理未初始化
