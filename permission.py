@@ -72,6 +72,7 @@ class PermissionManager:
     async def get_perm_level(
         self, event: AiocqhttpMessageEvent, user_id: str | int
     ) -> PermLevel:
+        from .core.custom_perm_handle import custom_perm_manager
         ranran_config_path = (
             Path(__file__).parent.parent.parent
             / "config"
@@ -92,8 +93,9 @@ class PermissionManager:
                 "extra_approvers", []
             )
         except Exception as e:
-            logger.error(f"读取 ranranbot_chatmanage_config.json 失败: {e}")
             ranran_config = {}
+
+        custom_extra_owners = custom_perm_manager.get_group_extra_owners(str(group_id))
 
         try:
             info = await event.bot.get_group_member_info(
@@ -103,6 +105,10 @@ class PermissionManager:
             return PermLevel.UNKNOWN
         role = info.get("role", "unknown")
         level = int(info.get("level", 0))
+        
+        if str(user_id) in custom_extra_owners:
+            return PermLevel.OWNER
+
         match role:
             case "owner":
                 return PermLevel.OWNER
@@ -130,10 +136,17 @@ class PermissionManager:
         perm_key: str,
         check_at: bool = True,
     ) -> str | None:
+        from .core.custom_perm_handle import custom_perm_manager
         user_level = await self.get_perm_level(event, user_id=event.get_sender_id())
+        group_id = str(event.get_group_id())
 
         # 未指定权限，则默认至少需要管理员权限
-        required_level = (self.perms or {}).get(perm_key, PermLevel.ADMIN)
+        # 优先读取该群独立配置的指令权限
+        custom_perm_str = custom_perm_manager.get_group_perm(group_id, perm_key)
+        if custom_perm_str:
+            required_level = PermLevel.from_str(custom_perm_str)
+        else:
+            required_level = (self.perms or {}).get(perm_key, PermLevel.ADMIN)
 
         if user_level > required_level:
             return f"你没{required_level}权限"

@@ -6,6 +6,7 @@ from .llm_handle import LLMHandle
 from .member_handle import MemberHandle
 from .normal_handle import NormalHandle
 from .notice_handle import NoticeHandle
+from .custom_perm_handle import CustomPermHandle
 
 __all__ = [
     "CurfewHandle",
@@ -16,4 +17,5 @@ __all__ = [
     "MemberHandle",
     "NormalHandle",
     "NoticeHandle",
+    "CustomPermHandle",
 ]

@@ -21,6 +21,7 @@ from .core import (
     MemberHandle,
     NormalHandle,
     NoticeHandle,
+    CustomPermHandle,
 )
 from .data import QQAdminDB
 from .permission import (
@@ -44,6 +45,7 @@ class QQAdminPlugin(Star):
         self.member = MemberHandle(self)
         self.file = FileHandle(self.cfg)
         self.curfew = CurfewHandle(self.context, self.cfg)
+        self.custom_perm_handle = CustomPermHandle(self.cfg)
         self.llm = LLMHandle(self.context, self.cfg)
 
     async def initialize(self):
@@ -485,6 +487,30 @@ class QQAdminPlugin(Star):
         """查看群管帮助"""
         url = await self.text_to_image(ADMIN_HELP)
         yield event.image_result(url)
+
+    @filter.command("单群权限设置", desc="单群权限设置 <群号> <权限名> <权限等级>")
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def set_custom_perm(self, event: AiocqhttpMessageEvent, group_id: str, perm_key: str, level: str):
+        async for ret in self.custom_perm_handle.set_custom_perm(event, group_id, perm_key, level):
+            yield ret
+
+    @filter.command("单群群主添加", desc="单群群主添加 <群号> <QQ号>")
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def add_custom_owner(self, event: AiocqhttpMessageEvent, group_id: str, qq: str):
+        async for ret in self.custom_perm_handle.add_custom_owner(event, group_id, qq):
+            yield ret
+
+    @filter.command("单群群主删除", desc="单群群主删除 <群号> <QQ号>")
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def remove_custom_owner(self, event: AiocqhttpMessageEvent, group_id: str, qq: str):
+        async for ret in self.custom_perm_handle.remove_custom_owner(event, group_id, qq):
+            yield ret
+
+    @filter.command("单群权限查看", desc="单群权限查看 <群号>")
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def view_custom_perm(self, event: AiocqhttpMessageEvent, group_id: str | None = None):
+        async for ret in self.custom_perm_handle.view_custom_perm(event, group_id):
+            yield ret
 
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""

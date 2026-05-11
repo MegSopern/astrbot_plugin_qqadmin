@@ -37,9 +37,14 @@ class NoticeHandle:
             if not image_path:
                 await event.send(event.plain_result("图片获取失败"))
                 return
-        await event.bot._send_group_notice(
-            group_id=int(event.get_group_id()), content=content, image=image_path
-        )
+        kwargs = {
+            "group_id": int(event.get_group_id()),
+            "content": content,
+        }
+        if image_path:
+            kwargs["image"] = str(image_path)
+        
+        await event.bot._send_group_notice(**kwargs)
         event.stop_event()
 
     async def get_group_notice(self, event: AiocqhttpMessageEvent):
