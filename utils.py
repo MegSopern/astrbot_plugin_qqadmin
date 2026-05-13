@@ -3,7 +3,6 @@ from datetime import datetime
 from pathlib import Path
 
 from aiohttp import ClientSession
-
 from astrbot import logger
 from astrbot.core.message.components import At, BaseMessageComponent, Image, Reply
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
@@ -78,6 +77,10 @@ ADMIN_HELP = (
     "- 取名 @用户 <抽取消息轮数>：根据聊天记录取个群昵称\n"
     "## 配置管理\n"
     "- 群管配置：修改/查看本群群管配置（直接跟配置文本）\n"
+    "- 特殊群群主添加/删除 <群号> <QQ号>：设置特殊群额外群主\n"
+    "- 特殊群管理员添加/删除 <群号> <QQ号>：设置特殊群额外管理员（需群主及以上）\n"
+    "- 特殊群次管理员添加/删除 <群号> <QQ号>：设置特殊群额外次管理员（需群主及以上）\n"
+    "- 特殊群权限批量设置 <群号> <权限名=权限等级> ...：一次性配置多个特殊群指令权限\n"
     "- 群管重置 <群号 | all>：重置本群或全部群的群管配置\n\n"
 )
 
@@ -98,7 +101,6 @@ def print_logo():
         """
     print("\033[92m" + logo + "\033[0m")  # 绿色文字
     print("\033[94m欢迎使用群管插件！\033[0m")  # 蓝色文字
-
 
 
 async def get_nickname(event: AiocqhttpMessageEvent, user_id: int | str) -> str:
@@ -202,9 +204,9 @@ def parse_bool(mode: str | bool | None):
     """解析布尔值"""
     mode = str(mode).strip().lower()
     match mode:
-        case "开" | "开启" | "启用" | "on" | "true" | "1" | "是" | "真" :
+        case "开" | "开启" | "启用" | "on" | "true" | "1" | "是" | "真":
             return True
-        case "关" | "关闭" | "禁用" | "off" | "false" | "0" | "否" | "假" :
+        case "关" | "关闭" | "禁用" | "off" | "false" | "0" | "否" | "假":
             return False
         case _:
             return None

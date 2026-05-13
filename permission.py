@@ -61,7 +61,6 @@ class PermissionManager:
         self.cfg: PluginConfig | None = None
         self.perms: dict[str, PermLevel] | None = None
 
-
     def lazy_init(self, config: PluginConfig):
         if self._initialized:
             raise RuntimeError("PermissionManager already initialized")
@@ -70,15 +69,22 @@ class PermissionManager:
         self._initialized = True
 
     async def get_perm_level(
-        self, event: AiocqhttpMessageEvent, user_id: str | int
+        self,
+        event: AiocqhttpMessageEvent,
+        user_id: str | int,
+        group_id: str | int | None = None,
     ) -> PermLevel:
         from .core.custom_perm_handle import custom_perm_manager
+
         ranran_config_path = (
             Path(__file__).parent.parent.parent
             / "config"
             / "ranranbot_chatmanage_config.json"
         )
-        group_id = event.get_group_id()
+        group_id = str(group_id or event.get_group_id())
+        user_id = str(user_id)
+        if not group_id.isdigit() or not user_id.isdigit():
+            return PermLevel.UNKNOWN
         if int(group_id) == 0 or int(user_id) == 0:
             return PermLevel.UNKNOWN
         if self.cfg and str(user_id) in self.cfg.admins_id:
@@ -92,10 +98,14 @@ class PermissionManager:
             extra_approvers = ranran_config.get("qqadmin", {}).get(
                 "extra_approvers", []
             )
-        except Exception as e:
+        except Exception:
             ranran_config = {}
 
         custom_extra_owners = custom_perm_manager.get_group_extra_owners(str(group_id))
+        custom_extra_admins = custom_perm_manager.get_group_extra_admins(str(group_id))
+        custom_extra_subadmins = custom_perm_manager.get_group_extra_subadmins(
+            str(group_id)
+        )
 
         try:
             info = await event.bot.get_group_member_info(
@@ -105,7 +115,7 @@ class PermissionManager:
             return PermLevel.UNKNOWN
         role = info.get("role", "unknown")
         level = int(info.get("level", 0))
-        
+
         if str(user_id) in custom_extra_owners:
             return PermLevel.OWNER
 
@@ -115,8 +125,11 @@ class PermissionManager:
             case "admin":
                 return PermLevel.ADMIN
 
+        if str(user_id) in custom_extra_admins:
+            return PermLevel.ADMIN
+
         # 群审批管理拥有次管理员权限（优先级低于群主/管理员）
-        if str(user_id) in extra_approvers:
+        if str(user_id) in extra_approvers or str(user_id) in custom_extra_subadmins:
             return PermLevel.SUBADMIN
 
         match role:
@@ -137,6 +150,7 @@ class PermissionManager:
         check_at: bool = True,
     ) -> str | None:
         from .core.custom_perm_handle import custom_perm_manager
+
         user_level = await self.get_perm_level(event, user_id=event.get_sender_id())
         group_id = str(event.get_group_id())
 

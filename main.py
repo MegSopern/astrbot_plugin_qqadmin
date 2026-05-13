@@ -15,13 +15,13 @@ from .config import PluginConfig
 from .core import (
     BanproHandle,
     CurfewHandle,
+    CustomPermHandle,
     FileHandle,
     JoinHandle,
     LLMHandle,
     MemberHandle,
     NormalHandle,
     NoticeHandle,
-    CustomPermHandle,
 )
 from .data import QQAdminDB
 from .permission import (
@@ -488,28 +488,113 @@ class QQAdminPlugin(Star):
         url = await self.text_to_image(ADMIN_HELP)
         yield event.image_result(url)
 
-    @filter.command("单群权限设置", desc="单群权限设置 <群号> <权限名> <权限等级>")
+    @filter.command(
+        "特殊群权限查看",
+        desc="特殊群权限查看 <群号>",
+    )
     @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
-    async def set_custom_perm(self, event: AiocqhttpMessageEvent, group_id: str, perm_key: str, level: str):
-        async for ret in self.custom_perm_handle.set_custom_perm(event, group_id, perm_key, level):
-            yield ret
-
-    @filter.command("单群群主添加", desc="单群群主添加 <群号> <QQ号>")
-    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
-    async def add_custom_owner(self, event: AiocqhttpMessageEvent, group_id: str, qq: str):
-        async for ret in self.custom_perm_handle.add_custom_owner(event, group_id, qq):
-            yield ret
-
-    @filter.command("单群群主删除", desc="单群群主删除 <群号> <QQ号>")
-    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
-    async def remove_custom_owner(self, event: AiocqhttpMessageEvent, group_id: str, qq: str):
-        async for ret in self.custom_perm_handle.remove_custom_owner(event, group_id, qq):
-            yield ret
-
-    @filter.command("单群权限查看", desc="单群权限查看 <群号>")
-    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
-    async def view_custom_perm(self, event: AiocqhttpMessageEvent, group_id: str | None = None):
+    async def view_custom_perm(
+        self, event: AiocqhttpMessageEvent, group_id: str | None = None
+    ):
+        if event.is_private_chat():
+            sender_id = str(event.get_sender_id())
+            if sender_id not in self.cfg.admins_id:
+                yield event.plain_result("仅超管可在私聊中使用该指令")
+                event.stop_event()
+                return
         async for ret in self.custom_perm_handle.view_custom_perm(event, group_id):
+            yield ret
+
+    @filter.command(
+        "特殊群权限设置",
+        desc="特殊群权限设置 <群号> <权限名> <权限等级>",
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def set_custom_perm(
+        self, event: AiocqhttpMessageEvent, group_id: str, perm_key: str, level: str
+    ):
+        async for ret in self.custom_perm_handle.set_custom_perm(
+            event, group_id, perm_key, level
+        ):
+            yield ret
+
+    @filter.command(
+        "特殊群权限批量设置",
+        desc="特殊群权限批量设置 <群号> <权限名=权限等级> ...",
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def set_custom_perm_batch(self, event: AiocqhttpMessageEvent):
+        async for ret in self.custom_perm_handle.set_custom_perm_batch(event):
+            yield ret
+
+    @filter.command(
+        "特殊群群主添加",
+        desc="特殊群群主添加 <@或QQ号>",
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def add_custom_owner(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        async for ret in self.custom_perm_handle.add_custom_owner(event, qq):
+            yield ret
+
+    @filter.command(
+        "特殊群管理员添加",
+        desc="特殊群管理员添加 <@或QQ号>",
+        alias={"特殊群管理员增添"},
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def add_custom_admin(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        async for ret in self.custom_perm_handle.add_custom_admin(event, qq):
+            yield ret
+
+    @filter.command(
+        "特殊群次管理员添加",
+        desc="特殊群次管理员添加 <@或QQ号>",
+        alias={"特殊群次管理员增添"},
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def add_custom_subadmin(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        async for ret in self.custom_perm_handle.add_custom_subadmin(event, qq):
+            yield ret
+
+    @filter.command(
+        "特殊群管理员删除",
+        desc="特殊群管理员删除 <@或QQ号>",
+        alias={"特殊群管理员移除"},
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def remove_custom_admin(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        async for ret in self.custom_perm_handle.remove_custom_admin(event, qq):
+            yield ret
+
+    @filter.command(
+        "特殊群次管理员删除",
+        desc="特殊群次管理员删除 <@或QQ号>",
+        alias={"特殊群次管理员移除"},
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def remove_custom_subadmin(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        async for ret in self.custom_perm_handle.remove_custom_subadmin(event, qq):
+            yield ret
+
+    @filter.command(
+        "特殊群群主删除",
+        desc="特殊群群主删除 <@或QQ号>",
+    )
+    @perm_required(PermLevel.MEMBER, check_at=False, allow_private=True)
+    async def remove_custom_owner(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        async for ret in self.custom_perm_handle.remove_custom_owner(event, qq):
             yield ret
 
     async def terminate(self):
