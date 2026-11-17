@@ -41,7 +41,6 @@ class MemberHandle:
         url = await self.plugin.text_to_image(info_str)
         await event.send(event.image_result(url))
 
-
     async def clear_group_member(
         self,
         event: AiocqhttpMessageEvent,
@@ -108,8 +107,8 @@ class MemberHandle:
             if event.message_str == "确认清理":
                 msg_list = []
                 for clear_id in clear_ids:
+                    target_name = await get_nickname(event, user_id=clear_id)
                     try:
-                        target_name = await get_nickname(event, user_id=clear_id)
                         await event.bot.set_group_kick(
                             group_id=int(group_id),
                             user_id=int(clear_id),

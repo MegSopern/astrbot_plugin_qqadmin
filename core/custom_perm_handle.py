@@ -1,18 +1,17 @@
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List
 
-from astrbot.api.event import filter
-from astrbot.api.star import Context, Star
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 
 from ..config import PluginConfig
-from ..permission import PermLevel, perm_manager, perm_required
+from ..data import QQAdminDB
+from ..permission import PermLevel, perm_manager
 from ..utils import get_ats
 
+# 中文权限名 -> 配置中的权限键名
 PERM_FIELD_MAP = {
     "禁言": "set_group_ban",
     "禁我": "set_group_ban_me",
@@ -23,9 +22,11 @@ PERM_FIELD_MAP = {
     "改名": "set_group_card",
     "改我": "set_group_card_me",
     "头衔": "set_group_special_title",
+    "改头衔": "set_group_special_title",
     "申请头衔": "set_group_special_title_me",
     "踢了": "set_group_kick",
     "拉黑": "set_group_block",
+    "群拉黑": "set_group_block",
     "设置管理员": "admin",
     "上管": "admin",
     "下管": "admin",
@@ -66,7 +67,10 @@ PERM_FIELD_MAP = {
     "查看群文件": "view_group_file",
     "取名": "ai_set_card",
     "取头衔": "ai_set_title",
+    "ai取名": "ai_set_card",
+    "ai取头衔": "ai_set_title",
     "群管配置": "set_config",
+    "群管设置": "set_config",
     "群管重置": "reset_config",
 }
 
@@ -83,19 +87,16 @@ VALID_CUSTOM_LEVELS = {
 
 
 class CustomPermManager:
+    """单群独立权限与额外身份（群主/管理员/次管理员）的 JSON 持久化管理器"""
+
     def __init__(self):
-        self.file_path: Path = None
+        self.file_path: Path | None = None
         self.data: dict = {}
 
     def _ensure_group(self, group_id: str) -> dict:
         group_id = str(group_id)
         if group_id not in self.data:
-            self.data[group_id] = {
-                "extra_owners": [],
-                "extra_admins": [],
-                "extra_subadmins": [],
-                "perms": {},
-            }
+            self.data[group_id] = {}
         group_data = self.data[group_id]
         group_data.setdefault("extra_owners", [])
         group_data.setdefault("extra_admins", [])
@@ -116,13 +117,21 @@ class CustomPermManager:
             self.save()
 
     def save(self):
-        if self.file_path:
+        if not self.file_path:
+            return
+        try:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def get_group_perm(self, group_id: str, perm_key: str) -> str | None:
-        """获取特定群聊独立配置的权限，如果没配置则返回None"""
+        """获取特定群聊独立配置的权限，如果没配置则返回 None"""
         return self.data.get(str(group_id), {}).get("perms", {}).get(perm_key)
+
+    def get_group_perms(self, group_id: str) -> dict:
+        """获取特定群聊全部独立配置的权限"""
+        return self.data.get(str(group_id), {}).get("perms", {})
 
     def get_group_extra_owners(self, group_id: str) -> list[str]:
         """获取特定群聊独立配置的额外群主列表"""
@@ -147,62 +156,56 @@ class CustomPermManager:
         group_data["perms"].update(perm_levels)
         self.save()
 
-    def add_extra_owner(self, group_id: str, qq: str):
+    def _add_extra(self, group_id: str, key: str, qq: str):
+        group_data = self._ensure_group(str(group_id))
+        qq = str(qq)
+        if qq not in group_data[key]:
+            group_data[key].append(qq)
+        self.save()
+
+    def _remove_extra(self, group_id: str, key: str, qq: str):
         group_id = str(group_id)
         qq = str(qq)
-        group_data = self._ensure_group(group_id)
-        if qq not in group_data["extra_owners"]:
-            group_data["extra_owners"].append(qq)
-        self.save()
+        members = self.data.get(group_id, {}).get(key, [])
+        if qq in members:
+            members.remove(qq)
+            self.save()
+
+    def add_extra_owner(self, group_id: str, qq: str):
+        self._add_extra(group_id, "extra_owners", qq)
 
     def add_extra_admin(self, group_id: str, qq: str):
-        group_id = str(group_id)
-        qq = str(qq)
-        group_data = self._ensure_group(group_id)
-        if qq not in group_data["extra_admins"]:
-            group_data["extra_admins"].append(qq)
-        self.save()
+        self._add_extra(group_id, "extra_admins", qq)
 
     def add_extra_subadmin(self, group_id: str, qq: str):
-        group_id = str(group_id)
-        qq = str(qq)
-        group_data = self._ensure_group(group_id)
-        if qq not in group_data["extra_subadmins"]:
-            group_data["extra_subadmins"].append(qq)
-        self.save()
-
-    def remove_extra_admin(self, group_id: str, qq: str):
-        group_id = str(group_id)
-        qq = str(qq)
-        if group_id in self.data and "extra_admins" in self.data[group_id]:
-            if qq in self.data[group_id]["extra_admins"]:
-                self.data[group_id]["extra_admins"].remove(qq)
-                self.save()
-
-    def remove_extra_subadmin(self, group_id: str, qq: str):
-        group_id = str(group_id)
-        qq = str(qq)
-        if group_id in self.data and "extra_subadmins" in self.data[group_id]:
-            if qq in self.data[group_id]["extra_subadmins"]:
-                self.data[group_id]["extra_subadmins"].remove(qq)
-                self.save()
+        self._add_extra(group_id, "extra_subadmins", qq)
 
     def remove_extra_owner(self, group_id: str, qq: str):
-        group_id = str(group_id)
-        qq = str(qq)
-        if group_id in self.data and "extra_owners" in self.data[group_id]:
-            if qq in self.data[group_id]["extra_owners"]:
-                self.data[group_id]["extra_owners"].remove(qq)
-                self.save()
+        self._remove_extra(group_id, "extra_owners", qq)
+
+    def remove_extra_admin(self, group_id: str, qq: str):
+        self._remove_extra(group_id, "extra_admins", qq)
+
+    def remove_extra_subadmin(self, group_id: str, qq: str):
+        self._remove_extra(group_id, "extra_subadmins", qq)
 
 
 custom_perm_manager = CustomPermManager()
 
 
 class CustomPermHandle:
-    def __init__(self, config: PluginConfig):
+    """单群独立权限配置指令"""
+
+    def __init__(self, config: PluginConfig, db: QQAdminDB | None = None):
         self.config = config
+        self.db = db
         custom_perm_manager.init(config.data_dir)
+
+    # ==================== 解析工具 ====================
+
+    def is_superuser(self, event: AiocqhttpMessageEvent) -> bool:
+        """触发者是否为 bot 超管"""
+        return str(event.get_sender_id()) in self.config.admins_id
 
     def _resolve_group_id(self, event: AiocqhttpMessageEvent) -> str | None:
         group_id = str(event.get_group_id())
@@ -253,13 +256,16 @@ class CustomPermHandle:
         ]
         return cn_names[0] if cn_names else perm_key
 
+    def _valid_perm_keys(self) -> set[str]:
+        keys = set(self.config.perms.keys()) | set(PERM_FIELD_MAP.values())
+        return keys
+
     def _resolve_perm_key(self, perm_key: str) -> tuple[str | None, str | None]:
         perm_key = perm_key.strip()
         if not perm_key:
             return None, "权限名不能为空"
 
-        valid_keys = self.config.perms.keys()
-        if perm_key in valid_keys:
+        if perm_key in self._valid_perm_keys():
             return perm_key, None
 
         if perm_key in PERM_FIELD_MAP:
@@ -279,6 +285,22 @@ class CustomPermHandle:
         level = level.strip()
         return level if level in VALID_CUSTOM_LEVELS else None
 
+    def _get_group_default_perms(self, group_id: str) -> dict:
+        """获取该群当前生效的权限模板（跟随默认配置时为默认群配置）"""
+        if self.db is not None:
+            return self.db.get_group_snapshot(group_id).get("perms", {}) or {}
+        return dict(self.config.perms)
+
+    async def _require_group_owner(
+        self, event: AiocqhttpMessageEvent, group_id: str
+    ) -> bool:
+        user_level = await perm_manager.get_perm_level(
+            event, event.get_sender_id(), group_id=group_id
+        )
+        return user_level <= PermLevel.OWNER
+
+    # ==================== 权限配置 ====================
+
     async def set_custom_perm(
         self, event: AiocqhttpMessageEvent, group_id: str, perm_key: str, level: str
     ):
@@ -286,8 +308,13 @@ class CustomPermHandle:
         为特定群聊单独设置某个指令的权限
         如：/特殊群权限设置 123456 禁言 管理员
         """
-        if str(event.get_sender_id()) not in self.config.admins_id:
+        if not self.is_superuser(event):
             yield event.plain_result("你没超管权限")
+            return
+
+        group_id = str(group_id).strip()
+        if not group_id.isdigit():
+            yield event.plain_result(f"群号必须是数字：{group_id}")
             return
 
         perm_key, error = self._resolve_perm_key(perm_key)
@@ -312,23 +339,23 @@ class CustomPermHandle:
         为特定群聊批量设置多个指令权限
         如：/特殊群权限批量设置 123456 禁言=次管理员 改名=管理员
         """
-        if str(event.get_sender_id()) not in self.config.admins_id:
+        if not self.is_superuser(event):
             yield event.plain_result("你没超管权限")
             return
 
+        usage = (
+            "用法：/特殊群权限批量设置 <群号> <权限名=权限等级> ...\n"
+            "例如：/特殊群权限批量设置 123456 禁言=次管理员 改名=管理员"
+        )
         raw = event.message_str.partition(" ")[2].strip()
         if not raw:
-            yield event.plain_result(
-                "用法：/特殊群权限批量设置 <群号> <权限名=权限等级> ...\n例如：/特殊群权限批量设置 123456 禁言=次管理员 改名=管理员"
-            )
+            yield event.plain_result(usage)
             return
 
         raw = raw.strip().strip("[]【】()（）").strip()
         group_part, sep, rule_text = raw.partition(" ")
         if not sep or not group_part:
-            yield event.plain_result(
-                "用法：/特殊群权限批量设置 <群号> <权限名=权限等级> ...\n例如：/特殊群权限批量设置 123456 禁言=次管理员 改名=管理员"
-            )
+            yield event.plain_result(usage)
             return
 
         group_id = group_part.strip()
@@ -342,9 +369,7 @@ class CustomPermHandle:
             if item.strip()
         ]
         if not items:
-            yield event.plain_result(
-                "请提供至少一项权限配置，例如：/特殊群权限批量设置 123456 禁言=次管理员 改名=管理员"
-            )
+            yield event.plain_result("请提供至少一项权限配置，例如：禁言=次管理员 改名=管理员")
             return
 
         perm_updates: dict[str, str] = {}
@@ -392,16 +417,17 @@ class CustomPermHandle:
 
         yield event.plain_result("\n".join(result_lines))
 
-    async def add_custom_owner(
-        self, event: AiocqhttpMessageEvent, qq: str | None = None
-    ):
-        """
-        为特定群聊添加额外群主
-        """
-        if str(event.get_sender_id()) not in self.config.admins_id:
-            yield event.plain_result("你没超管权限")
-            return
+    # ==================== 额外身份管理 ====================
 
+    async def _add_extra(
+        self,
+        event: AiocqhttpMessageEvent,
+        qq: str | None,
+        *,
+        key: str,
+        label: str,
+        require_owner: bool,
+    ):
         group_id = self._resolve_group_id(event)
         if not group_id:
             yield event.plain_result("请在群聊中使用该指令")
@@ -412,195 +438,154 @@ class CustomPermHandle:
             yield event.plain_result(error)
             return
 
+        if require_owner and not await self._require_group_owner(event, group_id):
+            yield event.plain_result("你没群主权限")
+            return
+
+        add_func = {
+            "extra_owners": custom_perm_manager.add_extra_owner,
+            "extra_admins": custom_perm_manager.add_extra_admin,
+            "extra_subadmins": custom_perm_manager.add_extra_subadmin,
+        }[key]
         for target_qq in target_qqs:
-            custom_perm_manager.add_extra_owner(group_id, target_qq)
+            add_func(group_id, target_qq)
         yield event.plain_result(
-            f"已为群 {group_id} 添加额外群主：{', '.join(target_qqs)}。"
+            f"已为群 {group_id} 添加额外{label}：{', '.join(target_qqs)}。"
         )
+
+    async def _remove_extra(
+        self,
+        event: AiocqhttpMessageEvent,
+        qq: str | None,
+        *,
+        key: str,
+        label: str,
+        require_owner: bool,
+    ):
+        group_id = self._resolve_group_id(event)
+        if not group_id:
+            yield event.plain_result("请在群聊中使用该指令")
+            return
+
+        target_qqs, error = self._resolve_target_qqs(event, qq)
+        if error:
+            yield event.plain_result(error)
+            return
+
+        if require_owner and not await self._require_group_owner(event, group_id):
+            yield event.plain_result("你没群主权限")
+            return
+
+        remove_func = {
+            "extra_owners": custom_perm_manager.remove_extra_owner,
+            "extra_admins": custom_perm_manager.remove_extra_admin,
+            "extra_subadmins": custom_perm_manager.remove_extra_subadmin,
+        }[key]
+        for target_qq in target_qqs:
+            remove_func(group_id, target_qq)
+        yield event.plain_result(
+            f"已为群 {group_id} 移除额外{label}：{', '.join(target_qqs)}。"
+        )
+
+    async def add_custom_owner(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        """为特定群聊添加额外群主（仅超管）"""
+        if not self.is_superuser(event):
+            yield event.plain_result("你没超管权限")
+            return
+        async for ret in self._add_extra(
+            event, qq, key="extra_owners", label="群主", require_owner=False
+        ):
+            yield ret
 
     async def add_custom_admin(
         self, event: AiocqhttpMessageEvent, qq: str | None = None
     ):
-        """
-        为特定群聊添加额外管理员
-        """
-        group_id = self._resolve_group_id(event)
-        if not group_id:
-            yield event.plain_result("请在群聊中使用该指令")
-            return
-
-        target_qqs, error = self._resolve_target_qqs(event, qq)
-        if error:
-            yield event.plain_result(error)
-            return
-
-        user_level = await perm_manager.get_perm_level(
-            event, event.get_sender_id(), group_id=group_id
-        )
-        if user_level > PermLevel.OWNER:
-            yield event.plain_result("你没群主权限")
-            return
-
-        for target_qq in target_qqs:
-            custom_perm_manager.add_extra_admin(group_id, target_qq)
-        yield event.plain_result(
-            f"已为群 {group_id} 添加额外管理员：{', '.join(target_qqs)}。"
-        )
+        """为特定群聊添加额外管理员（需群主及以上）"""
+        async for ret in self._add_extra(
+            event, qq, key="extra_admins", label="管理员", require_owner=True
+        ):
+            yield ret
 
     async def add_custom_subadmin(
         self, event: AiocqhttpMessageEvent, qq: str | None = None
     ):
-        """
-        为特定群聊添加额外次管理员
-        """
-        group_id = self._resolve_group_id(event)
-        if not group_id:
-            yield event.plain_result("请在群聊中使用该指令")
-            return
-
-        target_qqs, error = self._resolve_target_qqs(event, qq)
-        if error:
-            yield event.plain_result(error)
-            return
-
-        user_level = await perm_manager.get_perm_level(
-            event, event.get_sender_id(), group_id=group_id
-        )
-        if user_level > PermLevel.OWNER:
-            yield event.plain_result("你没群主权限")
-            return
-
-        for target_qq in target_qqs:
-            custom_perm_manager.add_extra_subadmin(group_id, target_qq)
-        yield event.plain_result(
-            f"已为群 {group_id} 添加额外次管理员：{', '.join(target_qqs)}。"
-        )
-
-    async def remove_custom_admin(
-        self, event: AiocqhttpMessageEvent, qq: str | None = None
-    ):
-        """
-        为特定群聊删除额外管理员
-        """
-        group_id = self._resolve_group_id(event)
-        if not group_id:
-            yield event.plain_result("请在群聊中使用该指令")
-            return
-
-        target_qqs, error = self._resolve_target_qqs(event, qq)
-        if error:
-            yield event.plain_result(error)
-            return
-
-        user_level = await perm_manager.get_perm_level(
-            event, event.get_sender_id(), group_id=group_id
-        )
-        if user_level > PermLevel.OWNER:
-            yield event.plain_result("你没群主权限")
-            return
-
-        for target_qq in target_qqs:
-            custom_perm_manager.remove_extra_admin(group_id, target_qq)
-        yield event.plain_result(
-            f"已为群 {group_id} 移除额外管理员：{', '.join(target_qqs)}。"
-        )
-
-    async def remove_custom_subadmin(
-        self, event: AiocqhttpMessageEvent, qq: str | None = None
-    ):
-        """
-        为特定群聊删除额外次管理员
-        """
-        group_id = self._resolve_group_id(event)
-        if not group_id:
-            yield event.plain_result("请在群聊中使用该指令")
-            return
-
-        target_qqs, error = self._resolve_target_qqs(event, qq)
-        if error:
-            yield event.plain_result(error)
-            return
-
-        user_level = await perm_manager.get_perm_level(
-            event, event.get_sender_id(), group_id=group_id
-        )
-        if user_level > PermLevel.OWNER:
-            yield event.plain_result("你没群主权限")
-            return
-
-        for target_qq in target_qqs:
-            custom_perm_manager.remove_extra_subadmin(group_id, target_qq)
-        yield event.plain_result(
-            f"已为群 {group_id} 移除额外次管理员：{', '.join(target_qqs)}。"
-        )
+        """为特定群聊添加额外次管理员（需群主及以上）"""
+        async for ret in self._add_extra(
+            event, qq, key="extra_subadmins", label="次管理员", require_owner=True
+        ):
+            yield ret
 
     async def remove_custom_owner(
         self, event: AiocqhttpMessageEvent, qq: str | None = None
     ):
-        """
-        为特定群聊删除额外群主
-        """
-        if str(event.get_sender_id()) not in self.config.admins_id:
+        """为特定群聊删除额外群主（仅超管）"""
+        if not self.is_superuser(event):
             yield event.plain_result("你没超管权限")
             return
+        async for ret in self._remove_extra(
+            event, qq, key="extra_owners", label="群主", require_owner=False
+        ):
+            yield ret
 
-        group_id = self._resolve_group_id(event)
-        if not group_id:
-            yield event.plain_result("请在群聊中使用该指令")
-            return
+    async def remove_custom_admin(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        """为特定群聊删除额外管理员（需群主及以上）"""
+        async for ret in self._remove_extra(
+            event, qq, key="extra_admins", label="管理员", require_owner=True
+        ):
+            yield ret
 
-        target_qqs, error = self._resolve_target_qqs(event, qq)
-        if error:
-            yield event.plain_result(error)
-            return
+    async def remove_custom_subadmin(
+        self, event: AiocqhttpMessageEvent, qq: str | None = None
+    ):
+        """为特定群聊删除额外次管理员（需群主及以上）"""
+        async for ret in self._remove_extra(
+            event, qq, key="extra_subadmins", label="次管理员", require_owner=True
+        ):
+            yield ret
 
-        for target_qq in target_qqs:
-            custom_perm_manager.remove_extra_owner(group_id, target_qq)
-        yield event.plain_result(
-            f"已为群 {group_id} 移除额外群主：{', '.join(target_qqs)}。"
-        )
+    # ==================== 查看配置 ====================
 
     async def view_custom_perm(
         self, event: AiocqhttpMessageEvent, group_id: str | None = None
     ):
-        """
-        查看特定群聊的独立权限配置信息
-        """
+        """查看特定群聊的独立权限配置信息"""
         if not group_id:
-            group_id = str(event.get_group_id())
-            if not group_id or group_id == "0":
+            group_id = self._resolve_group_id(event)
+            if not group_id:
                 yield event.plain_result("私聊中请指定群号，如：/特殊群权限查看 123456")
                 return
 
-        group_id = str(group_id)
-        custom_perms = custom_perm_manager.data.get(group_id, {}).get("perms", {})
+        group_id = str(group_id).strip()
+        if not group_id.isdigit():
+            yield event.plain_result(f"群号必须是数字：{group_id}")
+            return
+
+        custom_perms = custom_perm_manager.get_group_perms(group_id)
         extra_owners = custom_perm_manager.get_group_extra_owners(group_id)
         extra_admins = custom_perm_manager.get_group_extra_admins(group_id)
         extra_subadmins = custom_perm_manager.get_group_extra_subadmins(group_id)
 
         lines = [f"【群 {group_id} 权限配置】"]
-        if extra_owners:
-            lines.append(f"👑 独立额外群主: {', '.join(extra_owners)}")
-        else:
-            lines.append("👑 独立额外群主: 无")
-
-        if extra_admins:
-            lines.append(f"🛡️ 独立额外管理员: {', '.join(extra_admins)}")
-        else:
-            lines.append("🛡️ 独立额外管理员: 无")
-
-        if extra_subadmins:
-            lines.append(f"🧩 独立额外次管理员: {', '.join(extra_subadmins)}")
-        else:
-            lines.append("🧩 独立额外次管理员: 无")
+        lines.append(
+            f"👑 独立额外群主: {', '.join(extra_owners) if extra_owners else '无'}"
+        )
+        lines.append(
+            f"🛡️ 独立额外管理员: {', '.join(extra_admins) if extra_admins else '无'}"
+        )
+        lines.append(
+            f"🧩 独立额外次管理员: {', '.join(extra_subadmins) if extra_subadmins else '无'}"
+        )
 
         lines.append("\n📌 指令权限列表:")
-        for key, default_level in self.config.perms.items():
+        for key, default_level in self._get_group_default_perms(group_id).items():
             display_name = self._get_perm_display_name(key)
-
             if key in custom_perms:
                 lines.append(f"  - {display_name}: {custom_perms[key]} 【独立配置】")
             else:
-                lines.append(f"  - {display_name}: {default_level} (全局沿用)")
+                lines.append(f"  - {display_name}: {default_level} (群配置沿用)")
 
         yield event.plain_result("\n".join(lines))

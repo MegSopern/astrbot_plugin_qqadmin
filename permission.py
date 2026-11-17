@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import IntEnum
 from functools import wraps
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from astrbot import logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
@@ -12,6 +12,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 
 from .config import PluginConfig
+from .data import QQAdminDB
 from .utils import get_ats
 
 
@@ -51,7 +52,7 @@ class PermLevel(IntEnum):
             "未知": cls.UNKNOWN,
             "无权限": cls.UNKNOWN,
         }
-        return mapping.get(perm_str, cls.UNKNOWN)
+        return mapping.get(str(perm_str).strip(), cls.UNKNOWN)
 
 
 class PermissionManager:
@@ -59,14 +60,36 @@ class PermissionManager:
 
     def __init__(self):
         self.cfg: PluginConfig | None = None
-        self.perms: dict[str, PermLevel] | None = None
+        self.db: QQAdminDB | None = None
 
-    def lazy_init(self, config: PluginConfig):
+    def lazy_init(self, config: PluginConfig, db: QQAdminDB):
         if self._initialized:
             raise RuntimeError("PermissionManager already initialized")
         self.cfg = config
-        self.perms = {k: PermLevel.from_str(v) for k, v in self.cfg.perms.items()}
+        self.db = db
         self._initialized = True
+
+    def refresh(self, config: PluginConfig, db: QQAdminDB | None = None):
+        self.cfg = config
+        if db is not None:
+            self.db = db
+        self._initialized = True
+
+    def get_group_level_threshold(self, group_id: str) -> int:
+        group_config = (
+            self.db.get_group_snapshot(group_id)
+            if self.db is not None
+            else {"level_threshold": self.cfg.level_threshold if self.cfg else 50}
+        )
+        return int(group_config.get("level_threshold", 50))
+
+    def get_group_perms(self, group_id: str) -> dict:
+        group_config = (
+            self.db.get_group_snapshot(group_id)
+            if self.db is not None
+            else {"perms": self.cfg.perms if self.cfg else {}}
+        )
+        return group_config.get("perms", {}) or {}
 
     async def get_perm_level(
         self,
@@ -76,36 +99,36 @@ class PermissionManager:
     ) -> PermLevel:
         from .core.custom_perm_handle import custom_perm_manager
 
-        ranran_config_path = (
-            Path(__file__).parent.parent.parent
-            / "config"
-            / "ranranbot_chatmanage_config.json"
-        )
         group_id = str(group_id or event.get_group_id())
         user_id = str(user_id)
         if not group_id.isdigit() or not user_id.isdigit():
             return PermLevel.UNKNOWN
         if int(group_id) == 0 or int(user_id) == 0:
             return PermLevel.UNKNOWN
-        if self.cfg and str(user_id) in self.cfg.admins_id:
+        if self.cfg and user_id in self.cfg.admins_id:
             return PermLevel.SUPERUSER
 
-        # 读取额外管理员列表
+        # 兼容 ranranbot_chatmanage 插件的额外审批人配置
         extra_approvers: list[str] = []
+        ranran_config_path = (
+            Path(__file__).parent.parent.parent
+            / "config"
+            / "ranranbot_chatmanage_config.json"
+        )
         try:
             with open(ranran_config_path, "r", encoding="utf-8-sig") as f:
-                ranran_config = json.load(f)
-            extra_approvers = ranran_config.get("qqadmin", {}).get(
-                "extra_approvers", []
-            )
+                extra_approvers = [
+                    str(i)
+                    for i in json.load(f).get("qqadmin", {}).get(
+                        "extra_approvers", []
+                    )
+                ]
         except Exception:
-            ranran_config = {}
+            extra_approvers = []
 
-        custom_extra_owners = custom_perm_manager.get_group_extra_owners(str(group_id))
-        custom_extra_admins = custom_perm_manager.get_group_extra_admins(str(group_id))
-        custom_extra_subadmins = custom_perm_manager.get_group_extra_subadmins(
-            str(group_id)
-        )
+        custom_extra_owners = custom_perm_manager.get_group_extra_owners(group_id)
+        custom_extra_admins = custom_perm_manager.get_group_extra_admins(group_id)
+        custom_extra_subadmins = custom_perm_manager.get_group_extra_subadmins(group_id)
 
         try:
             info = await event.bot.get_group_member_info(
@@ -113,10 +136,12 @@ class PermissionManager:
             )
         except Exception:
             return PermLevel.UNKNOWN
+
         role = info.get("role", "unknown")
         level = int(info.get("level", 0))
+        level_threshold = self.get_group_level_threshold(group_id)
 
-        if str(user_id) in custom_extra_owners:
+        if user_id in custom_extra_owners:
             return PermLevel.OWNER
 
         match role:
@@ -125,22 +150,30 @@ class PermissionManager:
             case "admin":
                 return PermLevel.ADMIN
 
-        if str(user_id) in custom_extra_admins:
+        if user_id in custom_extra_admins:
             return PermLevel.ADMIN
 
         # 群审批管理拥有次管理员权限（优先级低于群主/管理员）
-        if str(user_id) in extra_approvers or str(user_id) in custom_extra_subadmins:
+        if user_id in extra_approvers or user_id in custom_extra_subadmins:
             return PermLevel.SUBADMIN
 
         match role:
             case "member":
                 return (
-                    PermLevel.HIGH
-                    if self.cfg and level >= self.cfg.level_threshold
-                    else PermLevel.MEMBER
+                    PermLevel.HIGH if level >= level_threshold else PermLevel.MEMBER
                 )
             case _:
                 return PermLevel.UNKNOWN
+
+    def get_required_level(self, group_id: str, perm_key: str) -> PermLevel:
+        """获取某群某指令所需权限，优先使用该群独立配置的权限"""
+        from .core.custom_perm_handle import custom_perm_manager
+
+        custom_perm_str = custom_perm_manager.get_group_perm(group_id, perm_key)
+        if custom_perm_str:
+            return PermLevel.from_str(custom_perm_str)
+        perms = self.get_group_perms(group_id)
+        return PermLevel.from_str(str(perms.get(perm_key, "管理员")))
 
     async def perm_block(
         self,
@@ -149,18 +182,11 @@ class PermissionManager:
         perm_key: str,
         check_at: bool = True,
     ) -> str | None:
-        from .core.custom_perm_handle import custom_perm_manager
-
-        user_level = await self.get_perm_level(event, user_id=event.get_sender_id())
         group_id = str(event.get_group_id())
+        user_level = await self.get_perm_level(event, user_id=event.get_sender_id())
 
         # 未指定权限，则默认至少需要管理员权限
-        # 优先读取该群独立配置的指令权限
-        custom_perm_str = custom_perm_manager.get_group_perm(group_id, perm_key)
-        if custom_perm_str:
-            required_level = PermLevel.from_str(custom_perm_str)
-        else:
-            required_level = (self.perms or {}).get(perm_key, PermLevel.ADMIN)
+        required_level = self.get_required_level(group_id, perm_key)
 
         if user_level > required_level:
             return f"你没{required_level}权限"
@@ -177,6 +203,32 @@ class PermissionManager:
 
         return None
 
+    async def llm_perm_block(
+        self,
+        event: AiocqhttpMessageEvent,
+        perm_key: str,
+        bot_perm: PermLevel = PermLevel.ADMIN,
+    ) -> str | None:
+        if event.platform_meta.name != "aiocqhttp":
+            return "该工具仅支持通过 QQ 群聊调用"
+
+        if event.is_private_chat():
+            return "该工具仅支持在 QQ 群聊中调用"
+
+        if not self._initialized:
+            logger.error(
+                "PermissionManager is not initialized while checking LLM tool permission: %s",
+                perm_key,
+            )
+            return "内部错误：权限系统尚未正确加载"
+
+        return await self.perm_block(
+            event,
+            bot_perm=bot_perm,
+            perm_key=perm_key,
+            check_at=False,
+        )
+
 
 perm_manager = PermissionManager()
 
@@ -192,7 +244,7 @@ def perm_required(
     :param perm_key: 可选。用户执行命令所需的最低权限键名，默认使用被装饰函数的函数名。
     :param bot_perm: Bot 执行此命令所需的最低权限等级。
     :param check_at: 是否检查“是否有权对被@者实施操作”。
-    :param allow_private: 是否允许在私信中执行。
+    :param allow_private: 是否允许在私信中执行（私信不做权限校验，由指令内部自行鉴权）。
     """
 
     def decorator(
@@ -212,7 +264,7 @@ def perm_required(
             if event.platform_meta.name != "aiocqhttp":
                 return
 
-            # 私信处理
+            # 私信处理：仅放行允许私信执行的指令，权限由指令内部校验
             if event.is_private_chat():
                 if not allow_private:
                     return

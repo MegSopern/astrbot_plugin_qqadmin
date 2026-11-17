@@ -115,7 +115,6 @@ class GroupCurfew:
             async with self._lock:
                 self.whole_ban_status = True
 
-
     async def start_curfew_task(self):
         """注册 APScheduler 定时任务"""
         hour_s, minute_s = map(int, self._start_time_str.split(":"))
@@ -142,7 +141,6 @@ class GroupCurfew:
         if start_dt <= now < end_dt:
             logger.debug(f"当前时间群 {self.group_id} 在宵禁时间段，立即启用禁言")
             await self._enable_curfew()
-
 
     def stop_curfew_task(self):
         """移除 APScheduler 任务（同步即可）"""
@@ -289,7 +287,6 @@ class CurfewHandle:
         if tasks:
             await asyncio.gather(*tasks)
 
-
     @staticmethod
     def parse_time(time_str: str) -> tuple[str, int, int] | None:
         """
@@ -314,40 +311,35 @@ class CurfewHandle:
         input_end_time: str | None = None,
     ):
         if not input_start_time or not input_end_time:
-            await event.send(event.plain_result("未输入范围 HH:MM HH:MM"))
-            return
+            return "未输入范围 HH:MM HH:MM"
 
         start_parsed = self.parse_time(input_start_time)
         end_parsed = self.parse_time(input_end_time)
 
         if not start_parsed or not end_parsed:
-            await event.send(event.plain_result("时间格式错误，应为 HH:MM"))
-            return
+            return "时间格式错误，应为 HH:MM"
 
         start_str, start_h, start_m = start_parsed
         end_str, end_h, end_m = end_parsed
 
         if start_h == end_h and start_m == end_m:
-            await event.send(event.plain_result("开始时间和结束时间不能相同"))
-            return
+            return "开始时间和结束时间不能相同"
 
         curfew_mgr = self.curfew_managers.get(event.get_self_id())
         if not curfew_mgr:
-            await event.send(event.plain_result("宵禁管理器未初始化"))
-            return
+            return "宵禁管理器未初始化"
 
         await curfew_mgr.enable_curfew(event.get_group_id(), start_str, end_str)
-        await event.send(event.plain_result(f"宵禁任务已创建：{start_str}~{end_str}"))
+        return f"宵禁任务已创建：{start_str}~{end_str}"
 
     async def stop_curfew(self, event: AiocqhttpMessageEvent):
         curfew_mgr = self.curfew_managers.get(event.get_self_id())
         if not curfew_mgr:
-            await event.send(event.plain_result("宵禁管理器未初始化"))
-            return
+            return "宵禁管理器未初始化"
         if await curfew_mgr.disable_curfew(event.get_group_id()):
-            await event.send(event.plain_result("本群宵禁任务已取消"))
+            return "本群宵禁任务已取消"
         else:
-            await event.send(event.plain_result("本群没有宵禁任务"))
+            return "本群没有宵禁任务"
 
     async def stop_all_tasks(self):
         for _, curfew_mgr in self.curfew_managers.items():

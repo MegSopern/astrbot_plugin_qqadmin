@@ -9,13 +9,17 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 
 from ..config import PluginConfig
+from ..data import QQAdminDB
 from ..utils import get_ats, get_nickname
 
 
 class LLMHandle:
-    def __init__(self, context: Context, config: PluginConfig):
+    """取名 / 取头衔：根据群聊记录让 LLM 生成昵称或头衔"""
+
+    def __init__(self, context: Context, config: PluginConfig, db: QQAdminDB):
         self.context = context
         self.cfg = config
+        self.db = db
 
     def _build_user_context(
         self, round_messages: list[dict[str, Any]], target_id: str
@@ -49,19 +53,23 @@ class LLMHandle:
                 "count": 200,
                 "reverseOrder": True,
             }
-            result: dict = await event.bot.api.call_action(
-                "get_group_msg_history", **payloads
-            )
-            round_messages = result["messages"]
+            try:
+                result: dict = await event.bot.api.call_action(
+                    "get_group_msg_history", **payloads
+                )
+            except Exception as e:
+                logger.warning(f"获取群聊天记录失败：{e}")
+                break
+            round_messages = (result or {}).get("messages") or []
+            if not round_messages:
+                break
             message_seq = round_messages[0]["message_id"]
 
             all_lines.extend(self._build_user_context(round_messages, target_id))
 
         return "\n".join(all_lines)
 
-    async def get_llm_respond(
-        self, system_prompt: str, chat_history: str
-    ) -> str | None:
+    async def get_llm_respond(self, system_prompt: str, chat_history: str) -> str | None:
         """调用llm回复"""
         get_using = self.context.get_using_provider()
         if not get_using:
@@ -95,6 +103,8 @@ class LLMHandle:
         if not match:
             return None, "未能从LLM回复中提取到昵称"
         new_card = re.sub(r"[^a-zA-Z\u4e00-\u9fff]", "", match.group(1))[:8]
+        if not new_card:
+            return None, "生成的昵称不含有效字符（仅支持字母和汉字）"
 
         reason_match = re.search(r"'([^']*)'", llm_respond)
         reason = reason_match.group(1) if reason_match else ""
@@ -104,8 +114,12 @@ class LLMHandle:
     async def parse_args(self, event: AiocqhttpMessageEvent):
         at_ids = get_ats(event)
         target_id = at_ids[0] if at_ids else event.get_sender_id()
-        end_arg = event.message_str.split()[-1]
-        query_rounds = int(end_arg) if end_arg.isdigit() else self.cfg.llm_get_msg_count
+        parts = event.message_str.split()
+        end_arg = parts[-1] if parts else ""
+        query_rounds = (
+            int(end_arg) if end_arg.isdigit() else self.cfg.llm_get_msg_count
+        )
+        query_rounds = max(1, min(int(query_rounds), 40))
         raw_card = await get_nickname(event, target_id)
         return target_id, raw_card, query_rounds
 
@@ -130,13 +144,21 @@ class LLMHandle:
         if not nick:
             await event.send(event.plain_result(f"生成失败：{reason}"))
             return
-        await event.send(event.plain_result(f"给{raw_card}取的新{name_type}：{nick}"))
-        await event.send(event.plain_result(f"理由：{reason}"))
+
+        msg = f"给{raw_card}取的新{name_type}：{nick}"
+        if reason:
+            msg += f"\n理由：{reason}"
+
         # 实际执行
         try:
             await set_func(int(event.get_group_id()), int(target_id), nick)
         except Exception as e:
-            logger.warning(f"设置新{name_type}失败：{e}, 跳过操作")
+            logger.warning(f"设置新{name_type}失败：{e}")
+            await event.send(
+                event.plain_result(f"{msg}\n应用失败（Bot 可能缺少相应权限），已跳过设置")
+            )
+            return
+        await event.send(event.plain_result(f"{msg}\n已应用为{raw_card}的新{name_type}"))
 
     async def ai_set_card(self, event: AiocqhttpMessageEvent):
         """接口：设置群昵称"""

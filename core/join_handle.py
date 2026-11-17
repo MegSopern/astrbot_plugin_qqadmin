@@ -1,6 +1,6 @@
 from aiocqhttp import CQHttp
-
 from astrbot.api import logger
+from astrbot.core.message.components import At, Plain
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
@@ -19,9 +19,7 @@ class JoinHandle:
     async def _send_admin(self, client: CQHttp, message: str):
         for admin_id in self.cfg.admins_id:
             try:
-                await client.send_private_msg(
-                    user_id=int(admin_id), message=message
-                )
+                await client.send_private_msg(user_id=int(admin_id), message=message)
             except Exception as e:
                 logger.error(f"无法发送消息给bot管理员：{e}")
 
@@ -305,9 +303,10 @@ class JoinHandle:
             if comment:
                 notice += f"\n{comment}"
             if approve_msg:
-                notice += f"\n\n{approve_msg}"
+                notice += f"\n{approve_msg}"
 
-            if self.cfg.admin_audit:
+            group_config = self.db.get_group_snapshot(gid)
+            if group_config.get("admin_audit", self.cfg.admin_audit):
                 await self._send_admin(client, notice)
             else:
                 await event.send(event.plain_result(notice))
@@ -327,18 +326,14 @@ class JoinHandle:
                     msg += "，已拉黑"
                 await event.send(event.plain_result(msg))
 
-
         # 进群欢迎、禁言
-        elif (
-            raw.get("notice_type") == "group_increase"
-            and uid != event.get_self_id()
-        ):
+        elif raw.get("notice_type") == "group_increase" and uid != event.get_self_id():
             # 进群欢迎
             join_welcome = await self.db.get(gid, "join_welcome")
             if join_welcome:
                 nickname = await get_nickname(event, uid)
                 welcome = join_welcome.format(nickname=nickname)
-                await event.send(event.plain_result(welcome))
+                await event.send(event.chain_result([At(qq=uid), Plain(f" {welcome}")]))
             # 进群禁言
             join_ban_time = await self.db.get(gid, "join_ban_time")
             if join_ban_time > 0:
