@@ -8,7 +8,13 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 
 from ..config import PluginConfig
 from ..data import QQAdminDB
-from ..utils import BAN_ME_QUOTES, extract_image_url, get_ats, get_nickname
+from ..utils import (
+    BAN_ME_QUOTES,
+    describe_qq_error,
+    extract_image_url,
+    get_ats,
+    get_nickname,
+)
 
 
 class NormalHandle:
@@ -144,10 +150,9 @@ class NormalHandle:
 
     @staticmethod
     def describe_title_error(error: Exception) -> str:
-        reason = str(error)
-        if "1013" in reason:
-            return "QQ 拒绝了该头衔（Bot 需为群主，且头衔不能超长或含特殊字符）"
-        return "接口调用失败，详见插件日志"
+        return describe_qq_error(
+            error, hint="头衔仅群主可设置，且不能超长或含特殊字符"
+        )
 
     async def set_group_special_title(
         self,
@@ -278,15 +283,6 @@ class NormalHandle:
             return ""
         return str(info.get("role", "")).strip().lower()
 
-    @staticmethod
-    def _describe_admin_error(exc: Exception) -> str:
-        text = str(exc)
-        if "120101007" in text or "ERR_NO_PERMISSION" in text:
-            return "权限不足（Bot 需为群主，且不能操作群主本人）"
-        if "120102001" in text or "不允许" in text:
-            return "QQ 拒绝了本次操作"
-        return "QQ 接口返回异常，请稍后重试"
-
     async def set_group_admin(self, event: AiocqhttpMessageEvent, enable: bool):
         """上管/下管：逐个校验目标身份并调用接口，单个失败不影响其他目标"""
         gid = int(event.get_group_id())
@@ -322,7 +318,7 @@ class NormalHandle:
             except Exception as e:
                 logger.warning(f"{action}{target}的管理员身份失败：{e}")
                 results.append(
-                    f"{target} {action}管理员失败：{self._describe_admin_error(e)}"
+                    f"{target} {action}管理员失败：{describe_qq_error(e)}"
                 )
                 continue
 

@@ -190,3 +190,49 @@ def parse_bool(mode: str | bool | None, default: bool = False):
             return False
         case _:
             return default
+
+
+_ERR_TEXT_LIMIT = 120
+
+
+def _shorten_error(exc: Exception, limit: int = _ERR_TEXT_LIMIT) -> str:
+    """压缩异常文本：合并空白，空异常回退类名，超长截断，便于塞进群消息"""
+    text = " ".join(str(exc).split()) or exc.__class__.__name__
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+def describe_qq_error(exc: Exception, *, hint: str | None = None) -> str:
+    """把 OneBot/QQ 接口异常翻译成群友能看懂的中文提示。
+
+    只归类有依据的特征：120101007 / ERR_NO_PERMISSION 来自线上日志原文
+    （`OIDB error 120101007 on 0x1096_1: ERR_NO_PERMISSION`）。
+    刻意不使用 4 位裸数字（如 1013）做子串匹配，避免误命中 QQ 号、时间戳、seq。
+    识别不了的异常会把原文截断后带回，方便用户自助排查。
+    """
+    text = str(exc)
+    low = text.lower()
+    cls = exc.__class__.__name__
+
+    if "120101007" in text or "err_no_permission" in low or "权限不足" in text:
+        msg = "权限不足（Bot 需为管理员/群主，且不能操作群主本人）"
+    elif (
+        "retcode=1404" in low
+        or "api_not_found" in low
+        or "not implemented" in low
+        or "unknown action" in low
+        or "不支持" in text
+        or cls == "ApiNotAvailable"
+    ):
+        msg = "当前 QQ 协议端不支持该操作"
+    elif (
+        isinstance(exc, TimeoutError)
+        or cls == "NetworkError"
+        or any(k in low for k in ("timeout", "timed out", "network", "connection"))
+    ):
+        msg = "调用 QQ 接口超时或网络异常，请稍后重试"
+    elif "不允许" in text or "not allowed" in low or "拒绝" in text:
+        msg = "QQ 拒绝了本次操作"
+    else:
+        msg = f"QQ 接口返回异常（{_shorten_error(exc)}），详见插件日志"
+
+    return f"{msg}（{hint}）" if hint else msg
