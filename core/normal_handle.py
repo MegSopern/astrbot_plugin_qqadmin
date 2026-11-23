@@ -254,20 +254,84 @@ class NormalHandle:
             results.append(f"已将【{tid}-{target_name}】踢出本群并拉黑!")
         return "\n".join(results) if results else "未指定要拉黑的用户"
 
+    @staticmethod
+    async def _get_member_role(event: AiocqhttpMessageEvent, user_id: str | int) -> str:
+        """获取群成员角色（owner/admin/member），失败或未知返回空串"""
+        try:
+            info = (
+                await event.bot.get_group_member_info(
+                    group_id=int(event.get_group_id()),
+                    user_id=int(user_id),
+                    no_cache=True,
+                )
+                or {}
+            )
+        except Exception as e:
+            logger.debug(f"获取 {user_id} 的群角色失败：{e}")
+            return ""
+
+        if isinstance(info, dict) and not info.get("role"):
+            data = info.get("data")
+            if isinstance(data, dict):
+                info = data
+        if not isinstance(info, dict):
+            return ""
+        return str(info.get("role", "")).strip().lower()
+
+    @staticmethod
+    def _describe_admin_error(exc: Exception) -> str:
+        text = str(exc)
+        if "120101007" in text or "ERR_NO_PERMISSION" in text:
+            return "权限不足（Bot 需为群主，且不能操作群主本人）"
+        if "120102001" in text or "不允许" in text:
+            return "QQ 拒绝了本次操作"
+        return "QQ 接口返回异常，请稍后重试"
+
     async def set_group_admin(self, event: AiocqhttpMessageEvent, enable: bool):
+        """上管/下管：逐个校验目标身份并调用接口，单个失败不影响其他目标"""
+        gid = int(event.get_group_id())
+        action = "设置" if enable else "取消"
+        tids = get_ats(event)
+        if not tids:
+            return "未指定要操作的用户"
+
+        bot_role = await self._get_member_role(event, event.get_self_id())
+        if bot_role and bot_role != "owner":
+            return f"我目前不是群主，无法{action}管理员"
+
         results = []
-        for tid in get_ats(event):
+        for tid in tids:
             target_name = await get_nickname(event, user_id=tid)
-            await event.bot.set_group_admin(
-                group_id=int(event.get_group_id()), user_id=int(tid), enable=enable
-            )
-            msg = (
-                f"{target_name}已被设为管理员"
+            target = f"{target_name}({tid})"
+
+            role = await self._get_member_role(event, tid)
+            if role == "owner":
+                results.append(f"{target} 是群主，不能{action}管理员")
+                continue
+            if enable and role == "admin":
+                results.append(f"{target} 已经是管理员")
+                continue
+            if not enable and role and role != "admin":
+                results.append(f"{target} 不是管理员，无需取消")
+                continue
+
+            try:
+                await event.bot.set_group_admin(
+                    group_id=gid, user_id=int(tid), enable=enable
+                )
+            except Exception as e:
+                logger.warning(f"{action}{target}的管理员身份失败：{e}")
+                results.append(
+                    f"{target} {action}管理员失败：{self._describe_admin_error(e)}"
+                )
+                continue
+
+            results.append(
+                f"{target} 已被设为管理员"
                 if enable
-                else f"{target_name}的管理员身份已被取消"
+                else f"{target} 的管理员身份已被取消"
             )
-            results.append(msg)
-        return "\n".join(results) if results else "未指定要操作的用户"
+        return "\n".join(results)
 
     async def set_essence_msg(
         self,
