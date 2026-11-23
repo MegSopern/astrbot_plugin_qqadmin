@@ -168,7 +168,7 @@ class BanproHandle:
         """设置刷屏禁言时长"""
         gid = event.get_group_id()
         if isinstance(time, int):
-            await self.db.set(gid, "word_ban_time", time)
+            await self.db.set(gid, "spamming_ban_time", time)
             msg = (
                 f"本群刷屏禁言时长已设为：{time} 秒"
                 if time > 0
@@ -176,7 +176,7 @@ class BanproHandle:
             )
             await event.send(event.plain_result(msg))
         else:
-            status = await self.db.get(gid, "word_ban_time", 0)
+            status = await self.db.get(gid, "spamming_ban_time", 0)
             await event.send(event.plain_result(f"本群刷屏禁言时长：{status} 秒"))
 
     async def spamming_ban(self, event: AiocqhttpMessageEvent):

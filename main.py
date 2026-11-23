@@ -296,11 +296,13 @@ class QQAdminPlugin(Star):
             await self.banpro.on_ban_words(event)
 
     @filter.command("刷屏禁言")
-    @perm_required(PermLevel.ADMIN, perm_key="spamming")
+    # 注意：perm_key 沿用 schema 里的历史键名 handle_builtin_ban_words，
+    # 该项在 _conf_schema.json 中的描述即为「刷屏禁言指令」，勿与设置禁词的方法重名混淆
+    @perm_required(PermLevel.ADMIN, perm_key="handle_builtin_ban_words")
     async def handle_spamming_ban_time(
         self, event: AiocqhttpMessageEvent, time: int | None = None
     ):
-        """刷屏禁言 <秒数>, 设为 0 表示关闭禁词检测"""
+        """刷屏禁言 <秒数>, 设为 0 表示关闭刷屏检测"""
         await self.banpro.handle_spamming_ban_time(event, time)
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
