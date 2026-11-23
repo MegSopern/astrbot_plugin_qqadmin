@@ -71,10 +71,16 @@ class NormalHandle:
         event.stop_event()
 
     async def set_group_whole_ban(self, event: AiocqhttpMessageEvent, enable: bool):
-        await event.bot.set_group_whole_ban(
-            group_id=int(event.get_group_id()), enable=enable
-        )
-        return "已开启全体禁言" if enable else "已关闭全体禁言"
+        """全体禁言；成功返回空串（群里保持静默），失败返回提示"""
+        try:
+            await event.bot.set_group_whole_ban(
+                group_id=int(event.get_group_id()), enable=enable
+            )
+        except Exception as e:
+            logger.warning(f"全体禁言（enable={enable}）失败：{e}")
+            action = "开启" if enable else "关闭"
+            return f"{action}全体禁言失败：{describe_qq_error(e)}"
+        return ""
 
     async def set_group_card(
         self,
@@ -250,12 +256,27 @@ class NormalHandle:
         results = []
         for tid in tids:
             target_name = await get_nickname(event, user_id=tid)
-            await event.bot.set_group_kick(
-                group_id=int(gid),
-                user_id=int(tid),
-                reject_add_request=True,
-            )
-            await self.db.add(gid, "block_ids", str(tid))
+            try:
+                await event.bot.set_group_kick(
+                    group_id=int(gid),
+                    user_id=int(tid),
+                    reject_add_request=True,
+                )
+            except Exception as e:
+                logger.warning(f"拉黑{tid}失败（踢出阶段）：{e}")
+                results.append(
+                    f"拉黑【{tid}-{target_name}】失败：{describe_qq_error(e)}"
+                )
+                continue
+            # 只有踢出成功才记入黑名单，避免"没踢出去却被记入黑名单"
+            try:
+                await self.db.add(gid, "block_ids", str(tid))
+            except Exception as e:
+                logger.warning(f"写入{tid}的黑名单失败：{e}")
+                results.append(
+                    f"已将【{tid}-{target_name}】踢出本群，但写入黑名单失败，请稍后重试"
+                )
+                continue
             results.append(f"已将【{tid}-{target_name}】踢出本群并拉黑!")
         return "\n".join(results) if results else "未指定要拉黑的用户"
 
@@ -353,9 +374,13 @@ class NormalHandle:
 
     async def get_essence_msg_list(self, event: AiocqhttpMessageEvent):
         """查看群精华"""
-        essence_data = await event.bot.get_essence_msg_list(
-            group_id=int(event.get_group_id())
-        )
+        try:
+            essence_data = await event.bot.get_essence_msg_list(
+                group_id=int(event.get_group_id())
+            )
+        except Exception as e:
+            logger.warning(f"获取群精华失败：{e}")
+            return f"获取群精华失败：{describe_qq_error(e)}"
         if not essence_data:
             return "没有群精华消息"
         return f"{essence_data}"
@@ -366,10 +391,14 @@ class NormalHandle:
         image_url = image_url or extract_image_url(chain=event.get_messages())
         if not image_url:
             return "未获取到新头像"
-        await event.bot.set_group_portrait(
-            group_id=int(event.get_group_id()),
-            file=image_url,
-        )
+        try:
+            await event.bot.set_group_portrait(
+                group_id=int(event.get_group_id()),
+                file=image_url,
+            )
+        except Exception as e:
+            logger.warning(f"设置群头像失败：{e}")
+            return f"设置群头像失败：{describe_qq_error(e)}"
         return "群头像已更新"
 
     async def set_group_name(
@@ -377,7 +406,11 @@ class NormalHandle:
     ):
         if not group_name:
             return "未输入新群名"
-        await event.bot.set_group_name(
-            group_id=int(event.get_group_id()), group_name=str(group_name)
-        )
+        try:
+            await event.bot.set_group_name(
+                group_id=int(event.get_group_id()), group_name=str(group_name)
+            )
+        except Exception as e:
+            logger.warning(f"设置群名失败：{e}")
+            return f"设置群名失败：{describe_qq_error(e)}"
         return f"本群群名更新为：{group_name}"

@@ -134,7 +134,8 @@ class QQAdminPlugin(Star):
     ):
         """全禁 开/关, 开启或关闭群全员禁言"""
         enable = parse_bool(enable, default=True)
-        await self.normal.set_group_whole_ban(event, enable)
+        if result := await self.normal.set_group_whole_ban(event, enable):
+            yield event.plain_result(result)
 
     @filter.command("改名")
     @perm_required(PermLevel.ADMIN, perm_key="set_group_card")
@@ -615,6 +616,9 @@ class QQAdminPlugin(Star):
                 return
         if result := await self.normal.set_group_whole_ban(event, enable):
             yield result
+        else:
+            # 方法成功时返回空串（聊天入口保持静默），LLM 需要明确回执
+            yield "已开启全员禁言" if enable else "已关闭全员禁言"
 
     @filter.llm_tool()
     async def llm_set_group_kick(

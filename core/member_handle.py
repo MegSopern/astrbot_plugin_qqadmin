@@ -10,7 +10,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 from astrbot.core.utils.session_waiter import SessionController, session_waiter
 
-from ..utils import format_time, get_nickname
+from ..utils import describe_qq_error, format_time, get_nickname
 
 if TYPE_CHECKING:
     from ..main import QQAdminPlugin
@@ -24,7 +24,18 @@ class MemberHandle:
         """查看群友信息，人数太多时可能会处理失败"""
         await event.send(event.plain_result("获取中..."))
         group_id = event.get_group_id()
-        members_data = await event.bot.get_group_member_list(group_id=int(group_id))
+        try:
+            members_data = await event.bot.get_group_member_list(
+                group_id=int(group_id)
+            )
+        except Exception as e:
+            # 已经发过"获取中..."，失败时必须主动发提示，否则用户永远停在 loading
+            logger.warning(f"获取群成员列表失败：{e}")
+            await event.send(
+                event.plain_result(f"获取群友信息失败：{describe_qq_error(e)}")
+            )
+            return
+        members_data = members_data or []
         info_list = [
             (
                 f"{format_time(member['join_time'])}："

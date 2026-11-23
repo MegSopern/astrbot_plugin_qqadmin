@@ -1,5 +1,6 @@
 import asyncio
 
+from astrbot.api import logger
 from astrbot.core.message.components import At, Reply
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -7,7 +8,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 
 from ..config import PluginConfig
 from ..data import QQAdminDB
-from ..utils import get_ats
+from ..utils import describe_qq_error, get_ats
 
 
 class RecallHandle:
@@ -39,18 +40,26 @@ class RecallHandle:
                 "count": count,
                 "reverseOrder": True,
             }
-            result: dict = await client.api.call_action(
-                "get_group_msg_history", **payloads
-            )
+            try:
+                result: dict = await client.api.call_action(
+                    "get_group_msg_history", **payloads
+                )
+            except Exception as e:
+                logger.warning(f"获取群消息历史失败：{e}")
+                await event.send(
+                    event.plain_result(f"撤回失败：{describe_qq_error(e)}")
+                )
+                return
 
-            messages = list(reversed(result.get("messages", [])))
+            messages = list(reversed((result or {}).get("messages", [])))
             delete_count = 0
             sem = asyncio.Semaphore(10)
 
             # 撤回消息
             async def try_delete(message: dict):
                 nonlocal delete_count
-                if str(message["sender"]["user_id"]) not in target_ids:
+                sender_id = (message.get("sender") or {}).get("user_id")
+                if sender_id is None or str(sender_id) not in target_ids:
                     return
                 async with sem:
                     try:

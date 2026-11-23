@@ -10,7 +10,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 
 from ..config import PluginConfig
-from ..utils import download_file, extract_image_url
+from ..utils import describe_qq_error, download_file, extract_image_url
 
 if TYPE_CHECKING:
     from ..main import QQAdminPlugin
@@ -43,20 +43,34 @@ class NoticeHandle:
                 return "图片获取失败"
             kwargs["image"] = str(image_path)
 
-        await event.bot._send_group_notice(**kwargs)
+        try:
+            await event.bot._send_group_notice(**kwargs)
+        except Exception as e:
+            logger.warning(f"发布群公告失败：{e}")
+            return f"发布群公告失败：{describe_qq_error(e)}"
         return "群公告已发布"
 
     async def get_group_notice(self, event: AiocqhttpMessageEvent):
         """查看群公告"""
-        notices = await event.bot._get_group_notice(group_id=int(event.get_group_id()))
+        try:
+            notices = await event.bot._get_group_notice(
+                group_id=int(event.get_group_id())
+            )
+        except Exception as e:
+            logger.warning(f"获取群公告失败：{e}")
+            return f"获取群公告失败：{describe_qq_error(e)}"
 
         formatted_messages = []
-        for notice in notices:
-            sender_id = notice["sender_id"]
-            publish_time = datetime.fromtimestamp(notice["publish_time"]).strftime(
-                "%Y-%m-%d %H:%M:%S"
+        for notice in notices or []:
+            if not isinstance(notice, dict):
+                continue
+            sender_id = notice.get("sender_id", "未知")
+            publish_time = self._format_publish_time(notice.get("publish_time"))
+            message_text = (
+                str((notice.get("message") or {}).get("text", "")).replace(
+                    "&#10;", "\n\n"
+                )
             )
-            message_text = notice["message"]["text"].replace("&#10;", "\n\n")
 
             formatted_message = (
                 f"【{publish_time}-{sender_id}】\n\n"
@@ -66,3 +80,13 @@ class NoticeHandle:
 
         notices_str = "\n\n\n".join(formatted_messages)
         return notices_str or "当前群没有群公告"
+
+    @staticmethod
+    def _format_publish_time(timestamp: object) -> str:
+        """把公告发布时间戳转成可读时间，字段缺失或异常时降级"""
+        try:
+            return datetime.fromtimestamp(int(timestamp)).strftime(  # type: ignore[arg-type]
+                "%Y-%m-%d %H:%M:%S"
+            )
+        except (TypeError, ValueError, OSError, OverflowError):
+            return "未知时间"
